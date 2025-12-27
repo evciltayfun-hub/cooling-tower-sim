@@ -23,18 +23,18 @@ class FrenchCreekStyleEngine:
     def get_log_k(self, temp_c):
         """Sıcaklığa bağlı denge sabitleri"""
         tk = temp_c + 273.15
+        # pK2 ve pKsp sabitleri (Langelier hesabı için kritik)
         pk2 = 107.8871 + 0.03252849 * tk - 5151.79 / tk - 38.92561 * math.log10(tk) + 563713.9 / (tk**2)
         pksp = 171.9065 + 0.077993 * tk - 2839.319 / tk - 71.595 * math.log10(tk)
         return pk2, pksp
 
     def calculate_indices(self, w, t_c):
         """İndeks Hesapları"""
-        # Hata koruması (Sıfıra bölünme riskine karşı +0.0001 eklemeleri)
+        # Hata koruması (Sıfır değer girişine karşı)
         if w.get('CaH', 0) <= 0 or w.get('Alk', 0) <= 0: 
             return {"LSI": -99, "RSI": 99, "PSI": 99, "LarsonSkold": 0, "Ca_SO4": 0, "Mg_SiO2": 0, "Ca_PO4_Product": 0}
 
         TDS = w.get('TDS', w['Cond'] * 0.65)
-        I = 2.5e-5 * TDS 
         
         # pHs Hesabı
         pk2, pksp = self.get_log_k(t_c)
@@ -50,12 +50,12 @@ class FrenchCreekStyleEngine:
         pHeq = 1.465 * math.log10(w['Alk'] + 0.1) + 4.54
         PSI = 2 * pHs - pHeq
 
-        # Fosfat İndeksi
+        # Fosfat İndeksi (French Creek Kriteri)
         pt_risk = 0
         if w.get('oPO4', 0) > 0.1:
             pt_risk = w['CaH'] * w['oPO4']
 
-        # Larson-Skold
+        # Larson-Skold (Korozyon İndeksi)
         epm_Cl = w['Cl'] / 35.5
         epm_SO4 = w['SO4'] / 48.0
         epm_Alk = w['Alk'] / 50.0
@@ -97,7 +97,7 @@ class FrenchCreekStyleEngine:
             else:
                 curr['pH'] = min(raw['pH'] + math.log10(cycle), 9.3)
 
-            # TDS güncelle (önemli, yoksa I yanlış hesaplanır)
+            # TDS güncelle
             curr['TDS'] = curr['Cond'] * 0.65
 
             # 2. İndeksler (Skin Temp)
@@ -119,14 +119,14 @@ class FrenchCreekStyleEngine:
             elif curr['pH'] > 8.8 and idx['Mg_SiO2'] > 40000:
                 stop = "Magnezyum Silikat Riski"
 
-            # *** DÜZELTME BURADA: Tüm indeksleri sözlüğe ekledik ***
+            # Tarihçe Kaydı
             history.append({
                 "Cycle": round(cycle, 1),
                 "pH": round(curr['pH'], 2),
                 "LSI": round(idx['LSI'], 2),
                 "RSI": round(idx['RSI'], 2),
                 "PSI": round(idx['PSI'], 2),
-                "LarsonSkold": round(idx['LarsonSkold'], 2),  # <--- Eklendi
+                "LarsonSkold": round(idx['LarsonSkold'], 2), 
                 "SiO2": round(curr['SiO2'], 1),
                 "CaPO4_Prod": int(idx['Ca_PO4_Product']),
                 "Stop_Reason": stop
@@ -140,7 +140,6 @@ class FrenchCreekStyleEngine:
 
     def interpret_indices(self, vals):
         """Rapor yorumlayıcı"""
-        # Hata koruması: get metodu ile güvenli çekim
         lsi = vals.get('LSI', 0)
         ls = vals.get('LarsonSkold', 0)
         
@@ -157,12 +156,12 @@ class FrenchCreekStyleEngine:
         return interp
 
 # ==========================================
-# ARAYÜZ
+# ARAYÜZ (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="FC-Style Modeler V5.1", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="FC-Style Modeler V5.2", layout="wide", page_icon="🔬")
 engine = FrenchCreekStyleEngine()
 
-st.title("🔬 ProChem Modeling Suite (Stable V5.1)")
+st.title("🔬 ProChem Modeling Suite (Stable V5.2)")
 st.markdown("*French Creek Standartlarında İleri Seviye Su Şartlandırma Analizi*")
 
 with st.sidebar:
@@ -214,7 +213,7 @@ if run or True:
     if final['Cycle'] > 1:
         blow = evap / (final['Cycle'] - 1)
     else:
-        blow = 0 # Cycle 1 ise blöf sonsuzdur teorik olarak ama pratik gösterim için 0
+        blow = 0 
         
     mu = evap + blow
     
@@ -229,7 +228,7 @@ if run or True:
     k2.metric("Make-up", f"{int(mu)} m³/h")
     k3.metric("Blowdown", f"{float(blow):.1f} m³/h")
     k4.metric("LSI (Skin)", f"{final['LSI']:.2f}")
-    k5.metric("Larson-Skold", f"{final.get('LarsonSkold', 0):.2f}") # Güvenli gösterim
+    k5.metric("Larson-Skold", f"{final.get('LarsonSkold', 0):.2f}") 
     
     st.markdown("---")
 
@@ -249,7 +248,8 @@ if run or True:
         st.table(pd.DataFrame(idx_data))
 
     with c_right:
-        st.markdown("#### ⚠️ Mineral Limits")
+        # HATA DÜZELTİLDİ: Tırnak işareti kapatıldı
+        st.markdown("#### ⚠️ Mineral Solubility Limits") 
         pct_sio2 = min(final['SiO2'] / const['max_SiO2'], 1.0)
         st.write(f"**Silica (SiO2):** {final['SiO2']} / {const['max_SiO2']} ppm")
         st.progress(pct_sio2)
