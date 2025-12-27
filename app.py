@@ -23,14 +23,13 @@ class FrenchCreekStyleEngine:
     def get_log_k(self, temp_c):
         """Sıcaklığa bağlı denge sabitleri"""
         tk = temp_c + 273.15
-        # pK2 ve pKsp sabitleri (Langelier hesabı için kritik)
         pk2 = 107.8871 + 0.03252849 * tk - 5151.79 / tk - 38.92561 * math.log10(tk) + 563713.9 / (tk**2)
         pksp = 171.9065 + 0.077993 * tk - 2839.319 / tk - 71.595 * math.log10(tk)
         return pk2, pksp
 
     def calculate_indices(self, w, t_c):
         """İndeks Hesapları"""
-        # Hata koruması (Sıfır değer girişine karşı)
+        # Hata koruması
         if w.get('CaH', 0) <= 0 or w.get('Alk', 0) <= 0: 
             return {"LSI": -99, "RSI": 99, "PSI": 99, "LarsonSkold": 0, "Ca_SO4": 0, "Mg_SiO2": 0, "Ca_PO4_Product": 0}
 
@@ -50,12 +49,12 @@ class FrenchCreekStyleEngine:
         pHeq = 1.465 * math.log10(w['Alk'] + 0.1) + 4.54
         PSI = 2 * pHs - pHeq
 
-        # Fosfat İndeksi (French Creek Kriteri)
+        # Fosfat İndeksi
         pt_risk = 0
         if w.get('oPO4', 0) > 0.1:
             pt_risk = w['CaH'] * w['oPO4']
 
-        # Larson-Skold (Korozyon İndeksi)
+        # Larson-Skold
         epm_Cl = w['Cl'] / 35.5
         epm_SO4 = w['SO4'] / 48.0
         epm_Alk = w['Alk'] / 50.0
@@ -72,7 +71,9 @@ class FrenchCreekStyleEngine:
     def run_simulation(self, raw, des, const):
         cycle = 1.0
         history = []
-        skin_temp = des['T_out'] + 15
+        
+        # HATA DÜZELTİLDİ: 'T_out' yerine 't_out' (küçük harf) yapıldı
+        skin_temp = des['t_out'] + 15
         
         # Hidrolik Limit Hesabı
         losses = des['proc_loss'] + (des['q_circ'] * 0.0002)
@@ -158,10 +159,10 @@ class FrenchCreekStyleEngine:
 # ==========================================
 # ARAYÜZ (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="FC-Style Modeler V5.2", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="FC-Style Modeler V5.3", layout="wide", page_icon="🔬")
 engine = FrenchCreekStyleEngine()
 
-st.title("🔬 ProChem Modeling Suite (Stable V5.2)")
+st.title("🔬 ProChem Modeling Suite (Stable V5.3)")
 st.markdown("*French Creek Standartlarında İleri Seviye Su Şartlandırma Analizi*")
 
 with st.sidebar:
@@ -185,6 +186,7 @@ with st.sidebar:
     st.header("2. System Parameters")
     q_circ = st.number_input("Recirculation Rate (m³/h)", 10, 50000, 1500)
     dt = st.number_input("Delta-T (°C)", 1, 30, 10)
+    # Burada dictionary anahtarı ile uyumlu değişken ismi kullanıyoruz: t_out
     t_out = st.number_input("Basin Temp (°C)", 0, 60, 32)
     load = st.slider("Heat Load (%)", 10, 120, 100)
     loss = st.number_input("Unaccounted Losses (m³/h)", 0.0, 100.0, 0.0)
@@ -202,7 +204,10 @@ with st.sidebar:
 if run or True:
     # Veri Paketleme
     raw = {'CaH': ca, 'MgH': mg, 'Na': na, 'Alk': alk, 'Cl': cl, 'SO4': so4, 'SiO2': sio2, 'oPO4': o_po4, 'pH': ph, 'Cond': cond}
+    
+    # Burada 't_out' anahtarı küçük harf. Engine kısmında da 't_out' olarak düzelttik.
     des = {'q_circ': q_circ, 'dt': dt, 't_out': t_out, 'load': load, 'proc_loss': loss, 'acid_ph': acid_ph}
+    
     const = {'max_LSI': l_lsi, 'max_SiO2': l_sio2, 'max_CaSO4': 2500000, 'max_CaPO4': l_capo4}
     
     # Motoru Çalıştır
