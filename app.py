@@ -29,42 +29,46 @@ class FrenchCreekStyleEngine:
 
     def calculate_indices(self, w, t_c):
         """İndeks Hesapları"""
-        # Hata koruması
-        if w.get('CaH', 0) <= 0 or w.get('Alk', 0) <= 0: 
+        cah = w.get('CaH', 0)
+        alk = w.get('Alk', 0)
+        
+        if cah <= 0 or alk <= 0: 
             return {"LSI": -99, "RSI": 99, "PSI": 99, "LarsonSkold": 0, "Ca_SO4": 0, "Mg_SiO2": 0, "Ca_PO4_Product": 0}
 
-        TDS = w.get('TDS', w['Cond'] * 0.65)
+        tds = w.get('TDS', w.get('Cond', 1000) * 0.65)
         
         # pHs Hesabı
         pk2, pksp = self.get_log_k(t_c)
-        A = (math.log10(TDS + 1) - 1) / 10
+        A = (math.log10(tds + 1) - 1) / 10
         B = -13.12 * math.log10(t_c + 273) + 34.55
-        C = math.log10(w['CaH'] + 0.1) - 0.4
-        D = math.log10(w['Alk'] + 0.1)
+        C = math.log10(cah + 0.1) - 0.4
+        D = math.log10(alk + 0.1)
         pHs = (9.3 + A + B) - (C + D)
 
-        LSI = w['pH'] - pHs
-        RSI = 2 * pHs - w['pH']
+        ph = w.get('pH', 7.0)
+        LSI = ph - pHs
+        RSI = 2 * pHs - ph
         
-        pHeq = 1.465 * math.log10(w['Alk'] + 0.1) + 4.54
+        pHeq = 1.465 * math.log10(alk + 0.1) + 4.54
         PSI = 2 * pHs - pHeq
 
         # Fosfat İndeksi
         pt_risk = 0
-        if w.get('oPO4', 0) > 0.1:
-            pt_risk = w['CaH'] * w['oPO4']
+        opo4 = w.get('oPO4', 0)
+        if opo4 > 0.1:
+            pt_risk = cah * opo4
 
         # Larson-Skold
-        epm_Cl = w['Cl'] / 35.5
-        epm_SO4 = w['SO4'] / 48.0
-        epm_Alk = w['Alk'] / 50.0
+        epm_Cl = w.get('Cl', 0) / 35.5
+        epm_SO4 = w.get('SO4', 0) / 48.0
+        epm_Alk = alk / 50.0
         LS_Index = (epm_Cl + epm_SO4) / (epm_Alk + 0.001)
 
         return {
             "LSI": LSI, "RSI": RSI, "PSI": PSI, 
             "LarsonSkold": LS_Index, 
-            "Ca_SO4": w['CaH'] * w['SO4'],
-            "Mg_SiO2": w['MgH'] * w['SiO2'],
+            "Ca_SO4": cah * w.get('SO4', 0),
+            "Mg_SiO2": w.get('MgH', 0) * w.get('SiO2', 0),
             "Ca_PO4_Product": pt_risk
         }
 
@@ -72,12 +76,10 @@ class FrenchCreekStyleEngine:
         cycle = 1.0
         history = []
         
-        # HATA DÜZELTİLDİ: 'T_out' yerine 't_out' (küçük harf) yapıldı
-        skin_temp = des['t_out'] + 15
+        skin_temp = des.get('t_out', 32) + 15
         
-        # Hidrolik Limit Hesabı
-        losses = des['proc_loss'] + (des['q_circ'] * 0.0002)
-        evap = des['q_circ'] * des['dt'] * self.evap_factor * (des['load']/100)
+        losses = des.get('proc_loss', 0) + (des.get('q_circ', 1000) * 0.0002)
+        evap = des.get('q_circ', 1000) * des.get('dt', 10) * self.evap_factor * (des.get('load', 100)/100)
         
         if losses > 0:
             max_hydro_cycle = (evap + losses) / losses
@@ -92,44 +94,33 @@ class FrenchCreekStyleEngine:
                 curr[k] = v * cycle
             
             # pH Tahmini
-            if des['acid_ph']:
+            if des.get('acid_ph'):
                 curr['pH'] = des['acid_ph']
-                curr['Alk'] = raw['Alk'] * cycle * 0.65 
+                curr['Alk'] = raw.get('Alk', 100) * cycle * 0.65 
             else:
-                curr['pH'] = min(raw['pH'] + math.log10(cycle), 9.3)
+                base_ph = raw.get('pH', 7.5)
+                curr['pH'] = min(base_ph + math.log10(cycle), 9.3)
 
-            # TDS güncelle
-            curr['TDS'] = curr['Cond'] * 0.65
+            curr['TDS'] = curr.get('Cond', 1000) * 0.65
 
-            # 2. İndeksler (Skin Temp)
+            # 2. İndeksler
             idx = self.calculate_indices(curr, skin_temp)
             
             # 3. Limit Kontrol
             stop = None
-            
-            if cycle >= max_hydro_cycle:
-                stop = "Hidrolik Sınır (Su Kaybı)"
-            elif curr['SiO2'] > const['max_SiO2']: 
-                stop = f"Silis Limiti ({int(curr['SiO2'])} ppm)"
-            elif idx['LSI'] > const['max_LSI']: 
-                stop = f"LSI Limiti (+{idx['LSI']:.2f})"
-            elif idx['Ca_SO4'] > const['max_CaSO4']:
-                stop = "CaSO4 (Alçıtaşı) Riski"
-            elif idx['Ca_PO4_Product'] > const['max_CaPO4']:
-                stop = f"Ca-Fosfat Riski (Ürün: {int(idx['Ca_PO4_Product'])})"
-            elif curr['pH'] > 8.8 and idx['Mg_SiO2'] > 40000:
-                stop = "Magnezyum Silikat Riski"
+            if cycle >= max_hydro_cycle: stop = "Hidrolik Sınır (Su Kaybı)"
+            elif curr.get('SiO2', 0) > const['max_SiO2']: stop = f"Silis Limiti ({int(curr['SiO2'])} ppm)"
+            elif idx['LSI'] > const['max_LSI']: stop = f"LSI Limiti (+{idx['LSI']:.2f})"
+            elif idx['Ca_SO4'] > const['max_CaSO4']: stop = "CaSO4 (Alçıtaşı) Riski"
+            elif idx['Ca_PO4_Product'] > const['max_CaPO4']: stop = f"Ca-Fosfat Riski"
 
-            # Tarihçe Kaydı
             history.append({
                 "Cycle": round(cycle, 1),
                 "pH": round(curr['pH'], 2),
                 "LSI": round(idx['LSI'], 2),
                 "RSI": round(idx['RSI'], 2),
-                "PSI": round(idx['PSI'], 2),
                 "LarsonSkold": round(idx['LarsonSkold'], 2), 
-                "SiO2": round(curr['SiO2'], 1),
-                "CaPO4_Prod": int(idx['Ca_PO4_Product']),
+                "SiO2": round(curr.get('SiO2', 0), 1),
                 "Stop_Reason": stop
             })
 
@@ -138,31 +129,24 @@ class FrenchCreekStyleEngine:
                 return history[safe_idx], history, max_hydro_cycle
             
             cycle += 0.1
-
+    
     def interpret_indices(self, vals):
-        """Rapor yorumlayıcı"""
         lsi = vals.get('LSI', 0)
         ls = vals.get('LarsonSkold', 0)
-        
         interp = []
-        # Scaling
-        if lsi > 2.5: interp.append("🔴 SEVERE SCALING Potential (Ağır Kışır Riski)")
+        if lsi > 2.5: interp.append("🔴 SEVERE SCALING (Ağır Kışır)")
         elif lsi > 1.0: interp.append("🟠 Moderate Scaling (Orta Kışır)")
-        elif lsi < 0: interp.append("🟡 Corrosive Tendency (Korozyon Eğilimi)")
-        
-        # Corrosion
-        if ls > 3.0: interp.append("🔴 SEVERE PITTING Corrosion Likely (Şiddetli Oyulma)")
-        elif ls > 1.0: interp.append("🟠 Pitting Tendency (Oyulma Eğilimi)")
-        
+        elif lsi < 0: interp.append("🟡 Corrosive (Korozyon)")
+        if ls > 3.0: interp.append("🔴 SEVERE PITTING (Oyulma)")
         return interp
 
 # ==========================================
 # ARAYÜZ (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="FC-Style Modeler V5.3", layout="wide", page_icon="🔬")
+st.set_page_config(page_title="FC-Style Modeler V5.5", layout="wide", page_icon="🔬")
 engine = FrenchCreekStyleEngine()
 
-st.title("🔬 ProChem Modeling Suite (Stable V5.3)")
+st.title("🔬 ProChem Modeling Suite (V5.5)")
 st.markdown("*French Creek Standartlarında İleri Seviye Su Şartlandırma Analizi*")
 
 with st.sidebar:
@@ -186,7 +170,6 @@ with st.sidebar:
     st.header("2. System Parameters")
     q_circ = st.number_input("Recirculation Rate (m³/h)", 10, 50000, 1500)
     dt = st.number_input("Delta-T (°C)", 1, 30, 10)
-    # Burada dictionary anahtarı ile uyumlu değişken ismi kullanıyoruz: t_out
     t_out = st.number_input("Basin Temp (°C)", 0, 60, 32)
     load = st.slider("Heat Load (%)", 10, 120, 100)
     loss = st.number_input("Unaccounted Losses (m³/h)", 0.0, 100.0, 0.0)
@@ -202,70 +185,84 @@ with st.sidebar:
     run = st.button("RUN MODEL", type="primary")
 
 if run or True:
-    # Veri Paketleme
     raw = {'CaH': ca, 'MgH': mg, 'Na': na, 'Alk': alk, 'Cl': cl, 'SO4': so4, 'SiO2': sio2, 'oPO4': o_po4, 'pH': ph, 'Cond': cond}
-    
-    # Burada 't_out' anahtarı küçük harf. Engine kısmında da 't_out' olarak düzelttik.
     des = {'q_circ': q_circ, 'dt': dt, 't_out': t_out, 'load': load, 'proc_loss': loss, 'acid_ph': acid_ph}
-    
     const = {'max_LSI': l_lsi, 'max_SiO2': l_sio2, 'max_CaSO4': 2500000, 'max_CaPO4': l_capo4}
     
-    # Motoru Çalıştır
+    # Simülasyon
     final, hist, h_lim = engine.run_simulation(raw, des, const)
+    cycles = final['Cycle']
     
     # Su Dengesi
     evap = q_circ * dt * 0.00153 * (load/100)
-    if final['Cycle'] > 1:
-        blow = evap / (final['Cycle'] - 1)
-    else:
-        blow = 0 
-        
+    blow = evap / (cycles - 1) if cycles > 1 else 0
     mu = evap + blow
     
     # --- RAPORLAMA ---
-    st.subheader(f"📊 MODEL SUMMARY @ {final['Cycle']} Cycles")
-    
+    st.subheader(f"📊 MODEL SUMMARY @ {cycles} Cycles")
     if final['Stop_Reason']:
         st.error(f"⚠️ LIMITING FACTOR: **{final['Stop_Reason']}**")
     
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Cycles", f"{final['Cycle']}x")
-    k2.metric("Make-up", f"{int(mu)} m³/h")
-    k3.metric("Blowdown", f"{float(blow):.1f} m³/h")
-    k4.metric("LSI (Skin)", f"{final['LSI']:.2f}")
-    k5.metric("Larson-Skold", f"{final.get('LarsonSkold', 0):.2f}") 
-    
+    # KPI
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Cycles", f"{cycles}x")
+    c2.metric("Makeup", f"{int(mu)} m³/h")
+    c3.metric("Blowdown", f"{float(blow):.1f} m³/h")
+    c4.metric("LSI (Skin)", f"{final['LSI']:.2f}")
+
     st.markdown("---")
-
-    c_left, c_right = st.columns([1, 1])
     
-    with c_left:
-        st.markdown("#### 🧪 Saturation Indices")
-        interpretations = engine.interpret_indices(final)
-        for i in interpretations:
-            st.write(i)
-            
-        idx_data = {
-            "Index": ["Langelier (LSI)", "Ryznar (RSI)", "Puckorius (PSI)", "Larson-Skold"],
-            "Value": [final['LSI'], final['RSI'], final['PSI'], final.get('LarsonSkold', 0)],
-            "Guide": ["< 2.8 w/ Polymer", "6.0 - 7.0 Stable", "> 6.0 Stable", "< 3.0 for SS304"]
-        }
-        st.table(pd.DataFrame(idx_data))
-
-    with c_right:
-        # HATA DÜZELTİLDİ: Tırnak işareti kapatıldı
-        st.markdown("#### ⚠️ Mineral Solubility Limits") 
-        pct_sio2 = min(final['SiO2'] / const['max_SiO2'], 1.0)
-        st.write(f"**Silica (SiO2):** {final['SiO2']} / {const['max_SiO2']} ppm")
-        st.progress(pct_sio2)
+    # --- YENİ EKLENEN KISIM: DETAYLI SU KARAKTERİSTİĞİ TABLOSU ---
+    st.subheader("💧 Detailed Water Chemistry (Makeup vs Tower)")
+    
+    # Tablo verisini oluştur
+    # İyonlar düz çarpılır, pH simülasyondan gelir
+    chem_data = []
+    
+    # 1. pH ve İletkenlik (Özel Durumlar)
+    chem_data.append(["pH", ph, final['pH'], "-"])
+    chem_data.append(["Conductivity (µS/cm)", cond, int(cond * cycles), f"{cycles}x"])
+    
+    # 2. İyonlar (Döngü ile çarpılanlar)
+    ions_to_show = [
+        ("Calcium (CaH)", "ppm", raw['CaH']),
+        ("Magnesium (MgH)", "ppm", raw['MgH']),
+        ("M-Alkalinity", "ppm", raw['Alk']),
+        ("Chloride (Cl)", "ppm", raw['Cl']),
+        ("Sulfate (SO4)", "ppm", raw['SO4']),
+        ("Silica (SiO2)", "ppm", raw['SiO2']),
+        ("O-Phosphate", "ppm", raw['oPO4']),
+        ("Sodium (Na)", "ppm", raw['Na'])
+    ]
+    
+    for name, unit, val in ions_to_show:
+        tower_val = val * cycles
+        # Asit dozajı varsa Alkalinite düzeltmesi (Görsel amaçlı basit düzeltme)
+        if name == "M-Alkalinity" and des['acid_ph']:
+             tower_val = val * cycles * 0.65 # Tahmini nötrleşme
         
-        pct_capo4 = min(final['CaPO4_Prod'] / const['max_CaPO4'], 1.0)
-        st.write(f"**Ca-Phosphate:** {final['CaPO4_Prod']} / {const['max_CaPO4']}")
-        st.progress(pct_capo4)
+        chem_data.append([name, f"{val:.1f}", f"{tower_val:.1f}", f"{cycles}x"])
 
-    st.subheader("📈 Simulation Trajectory")
-    df = pd.DataFrame(hist)
-    st.line_chart(df, x="Cycle", y=["LSI", "RSI", "LarsonSkold"])
+    # DataFrame Oluştur
+    df_chem = pd.DataFrame(chem_data, columns=["Parameter", "Make-up", "Recirculation (Tower)", "Conc. Factor"])
     
-    with st.expander("View Full Data"):
-        st.dataframe(df)
+    # Tabloyu Göster
+    col_table, col_graph = st.columns([1, 1])
+    
+    with col_table:
+        st.dataframe(df_chem, hide_index=True, use_container_width=True)
+    
+    with col_graph:
+        st.markdown("#### 🧪 Saturation Indices")
+        interp = engine.interpret_indices(final)
+        for i in interp: st.write(i)
+        
+        idx_df = pd.DataFrame({
+            "Index": ["Langelier (LSI)", "Ryznar (RSI)", "Larson-Skold"],
+            "Value": [final['LSI'], final['RSI'], final.get('LarsonSkold', 0)]
+        })
+        st.table(idx_df)
+
+    # Simülasyon Grafiği
+    st.subheader("📈 Simulation Trend")
+    st.line_chart(pd.DataFrame(hist), x="Cycle", y=["LSI", "RSI", "SiO2"])
