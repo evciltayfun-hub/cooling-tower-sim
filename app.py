@@ -3,81 +3,99 @@ import pandas as pd
 import math
 
 # ==========================================
-# BÖLÜM 1: MÜHENDİSLİK MOTORU (BACKEND)
+# AYARLAR VE ÜRÜN VERİTABANI (BURAYI KENDİNE GÖRE DÜZENLE)
+# ==========================================
+
+# Buradaki isimleri ve fiyatları kendi gerçek ürünlerinle değiştirebilirsin.
+PRODUCT_DB = {
+    "scale_std": {
+        "code": "AQUASOL-100", 
+        "name": "Standart Antiskalant", 
+        "desc": "Düşük sertlik ve standart sular için ekonomik fosfonat.",
+        "limit_LSI": 1.8,  # Bu LSI'a kadar bunu öner
+        "dose_ppm": 20,
+        "price_usd": 2.50  # kg fiyatı
+    },
+    "scale_pro": {
+        "code": "AQUASOL-PRO", 
+        "name": "Yüksek Performans Polimer", 
+        "desc": "Yüksek silis ve sertlik içeren sular için kopolimer.",
+        "limit_LSI": 2.8,  # LSI 1.8 ile 2.8 arasındaysa bunu öner
+        "dose_ppm": 35,
+        "price_usd": 4.20
+    },
+    "corrosion": {
+        "code": "CORR-STOP 50", 
+        "name": "Korozyon İnhibitörü", 
+        "desc": "Yumuşak sular için çinko-fosfat bazlı koruyucu.",
+        "limit_LSI": 0.0,  # LSI negatifse (korozifse) bunu öner
+        "dose_ppm": 40,
+        "price_usd": 3.80
+    },
+    "biocide": {
+        "code": "BIO-SHOCK", 
+        "name": "İsotiazolin Biyosit", 
+        "desc": "Geniş spektrumlu bakteri kontrolü.",
+        "dose_ppm": 100,   # Haftalık şok dozajı varsayımı
+        "price_usd": 6.00
+    }
+}
+
+# ==========================================
+# HESAPLAMA MOTORU
 # ==========================================
 
 class TowerEngine:
     def __init__(self):
-        # Fiziksel Sabitler
         self.evap_factor = 0.00153 
         self.drift_rate = 0.0002    
 
-        # Ürün Veritabanı (Basitleştirilmiş)
-        self.products = {
-            "corrosion": {"name": "CORR-GUARD 500", "desc": "Çinko bazlı korozyon önleyici", "dose": 40},
-            "scale_std": {"name": "SCALE-X 100", "desc": "Standart fosfonat antiskalant", "dose": 20},
-            "scale_pro": {"name": "POLY-MAX 200", "desc": "Yüksek polimerli antiskalant", "dose": 35},
-            "bio_std":   {"name": "BIO-CIDE 30", "desc": "Oksitleyici olmayan biyosit", "dose": 100}
-        }
-
-    def validate_inputs(self, data):
-        """Kullanıcı hatalarını ve mantıksız girişleri yakalar."""
-        warnings = []
-        if data['Cond'] > 0 and data['TDS'] > data['Cond']:
-            warnings.append("⚠️ Uyarı: TDS genelde İletkenlikten küçük olmalıdır.")
-        if data['pH'] > 9.5:
-            warnings.append("⚠️ Uyarı: Besi suyu pH'ı çok yüksek (>9.5). Ölçüm hatası olabilir.")
-        return warnings
-
     def calculate_LSI(self, pH, temp_C, tds, ca_h, m_alk):
-        """Skin Temperature düzeltmeli LSI Hesabı"""
         if ca_h <= 0 or m_alk <= 0: return -99
-        
         A = (math.log10(tds) - 1) / 10
         B = -13.12 * math.log10(temp_C + 273) + 34.55
         C = math.log10(ca_h) - 0.4
         D = math.log10(m_alk)
-        
         pHs = (9.3 + A + B) - (C + D)
         return pH - pHs
 
-    def recommend_product(self, lsi, cycle):
-        """LSI değerine ve Cycle'a göre kimyasal önerir."""
+    def select_product(self, lsi):
+        """LSI değerine göre veritabanından en karlı ürünü seçer"""
         if lsi < 0:
-            return self.products["corrosion"], "Su korozif eğilimde."
-        elif 0 <= lsi < 1.8:
-            return self.products["scale_std"], "Standart kireç riski."
-        elif 1.8 <= lsi < 2.8:
-            return self.products["scale_pro"], "Yüksek kireç potansiyeli (Polimer şart)."
+            return PRODUCT_DB["corrosion"], "Su korozif yapıda, metal kaybı riski var."
+        elif 0 <= lsi <= PRODUCT_DB["scale_std"]["limit_LSI"]:
+            return PRODUCT_DB["scale_std"], "Standart kireçlenme eğilimi."
+        elif lsi <= PRODUCT_DB["scale_pro"]["limit_LSI"]:
+            return PRODUCT_DB["scale_pro"], "Yüksek kireçlenme potansiyeli. Polimer desteği şart."
         else:
-            return None, "LSI çok yüksek! Asit dozajı şart veya Cycle düşürülmeli."
+            return None, "LSI limitleri aşıldı! Asit dozajı şart."
 
     def run_simulation(self, water, design, constraints):
         cycle = 1.0
         history = []
-        skin_temp = design['T_out'] + 15 # Yüzey sıcaklığı tahmini
+        skin_temp = design['T_out'] + 15
         
         while True:
-            # 1. Konsantrasyon
+            # Konsantrasyon
             curr_Ca = water['CaH'] * cycle
             curr_Alk = water['Alk'] * cycle
             curr_SiO2 = water['SiO2'] * cycle
             curr_TDS = water['TDS'] * cycle
             
-            # Asit/pH Ayarı
+            # pH Tahmini
             if design['acid_target_ph']:
                 curr_pH = design['acid_target_ph']
-                curr_Alk = curr_Alk * 0.7 # Asit alkaliniteyi düşürür (basit model)
+                curr_Alk = curr_Alk * 0.75 # Asit alkaliniteyi düşürür
             else:
                 curr_pH = min(water['pH'] + math.log10(cycle), 9.2)
 
-            # 2. İndeksler (Critical = Skin Temp)
+            # LSI Hesapla (Skin Temperature)
             lsi_skin = self.calculate_LSI(curr_pH, skin_temp, curr_TDS, curr_Ca, curr_Alk)
             
-            # 3. Limit Kontrol
+            # Limit Kontrolü
             stop_reason = None
-            if curr_SiO2 > constraints['max_SiO2']: stop_reason = "Silis Limiti"
-            elif lsi_skin > constraints['max_LSI']: stop_reason = f"LSI Limiti (Skin: {lsi_skin:.2f})"
+            if curr_SiO2 > constraints['max_SiO2']: stop_reason = "Silis (SiO2) Limiti"
+            elif lsi_skin > constraints['max_LSI']: stop_reason = f"LSI Limiti ({lsi_skin:.2f})"
             elif curr_Ca > constraints['max_CaH']: stop_reason = "Kalsiyum Sertliği Limiti"
             
             history.append({
@@ -87,153 +105,122 @@ class TowerEngine:
                 "pH": round(curr_pH, 2)
             })
 
-            if stop_reason or cycle > 12.0:
-                # Son geçerli cycle'a geri dön (bir önceki adım güvenliydi)
+            if stop_reason or cycle > 15.0:
                 safe_cycle = max(1.0, round(cycle - 0.1, 1))
-                # Sonuç paketi hazırla
-                chem, reason = self.recommend_product(history[-2]['LSI'] if len(history)>1 else lsi_skin, safe_cycle)
+                # Son durum için ürün seçimi
+                final_lsi = history[-2]['LSI'] if len(history)>1 else lsi_skin
+                product, reason = self.select_product(final_lsi)
                 
                 return {
                     "Max_Cycle": safe_cycle,
-                    "Stop_Reason": stop_reason if stop_reason else "Maksimum Döngü Sınırı",
-                    "Final_LSI": history[-2]['LSI'] if len(history)>1 else lsi_skin,
-                    "Chemical": chem,
-                    "Chem_Reason": reason,
+                    "Stop_Reason": stop_reason if stop_reason else "Max Döngü",
+                    "Final_LSI": final_lsi,
+                    "Product": product,
+                    "Tech_Note": reason,
                     "History": history
                 }
-            
             cycle += 0.1
 
-    def calculate_water_balance(self, circulation, delta_t, cycles):
-        evap = circulation * delta_t * self.evap_factor
-        windage = circulation * self.drift_rate
-        if cycles <= 1: blowdown = 0
-        else: blowdown = (evap - ((cycles - 1) * windage)) / (cycles - 1)
-        makeup = evap + blowdown + windage
-        return evap, blowdown, makeup
+    def calculate_balance(self, circ, dt, cycles):
+        evap = circ * dt * self.evap_factor
+        wind = circ * self.drift_rate
+        if cycles <= 1: blow = 0
+        else: blow = (evap - ((cycles - 1) * wind)) / (cycles - 1)
+        makeup = evap + blow + wind
+        return evap, blow, makeup
 
 # ==========================================
-# BÖLÜM 2: GÖRSEL ARAYÜZ (FRONTEND)
+# ARAYÜZ (FRONTEND)
 # ==========================================
 
-st.set_page_config(page_title="ProCool Tower Sim", layout="wide")
+st.set_page_config(page_title="ChemTech Kule Uzmanı", layout="wide", page_icon="🏭")
 engine = TowerEngine()
 
-# --- CSS Stilleri (Görsellik için) ---
-st.markdown("""
-<style>
-    .metric-card {background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #2e86c1;}
-    .risk-high {color: #e74c3c; font-weight: bold;}
-    .risk-ok {color: #27ae60; font-weight: bold;}
-</style>
-""", unsafe_allow_html=True)
+st.title("🏭 ChemTech - Akıllı Şartlandırma Simülatörü")
 
-st.title("🏭 Akıllı Soğutma Kulesi Simülatörü")
-st.markdown("Su analizi ve tasarım verilerine göre **otomatik şartlandırma ve blöf rejimi** belirler.")
-
-# --- SIDEBAR (GİRİŞLER) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("1. Su Analizi")
+    st.header("💧 Besi Suyu Analizi")
     pH = st.number_input("pH", 6.0, 9.5, 7.8)
-    cond = st.number_input("İletkenlik (µS/cm)", 10, 5000, 400)
-    tds = st.number_input("TDS (mg/L)", 10, 4000, int(cond*0.65))
-    ca = st.number_input("Ca Sertliği (ppm CaCO3)", 0, 1000, 150)
-    alk = st.number_input("M-Alkalinite (ppm CaCO3)", 0, 1000, 120)
-    sio2 = st.number_input("Silis (SiO2 ppm)", 0, 150, 15)
+    cond = st.number_input("İletkenlik (µS/cm)", 10, 10000, 400)
+    tds = st.number_input("TDS (mg/L)", 10, 8000, int(cond*0.65))
+    ca = st.number_input("Ca Sertliği (ppm CaCO3)", 0, 2000, 150)
+    alk = st.number_input("M-Alk (ppm CaCO3)", 0, 2000, 120)
+    sio2 = st.number_input("Silis (SiO2 ppm)", 0, 200, 15)
 
-    st.header("2. Kule Tasarımı")
+    st.header("⚙️ Sistem Bilgileri")
     q_circ = st.number_input("Sirkülasyon (m3/h)", 10, 50000, 1000)
     dt = st.number_input("Delta T (°C)", 1, 30, 10)
-    t_out = st.number_input("Havuz Suyu Sıcaklığı (°C)", 10, 60, 32)
+    t_out = st.number_input("Havuz Sıcaklığı (°C)", 10, 60, 32)
     
-    st.header("3. Operasyon")
-    use_acid = st.checkbox("Asit Dozajı Var")
-    target_ph = st.slider("Hedef pH", 6.5, 8.2, 7.5) if use_acid else None
+    st.header("🧪 Opsiyonlar")
+    use_acid = st.checkbox("Asit Dozajı")
+    target_ph = st.slider("Hedef pH", 6.0, 8.5, 7.5) if use_acid else None
     
-    st.markdown("---")
-    if st.button("HESAPLA", type="primary"):
-        run_calc = True
-    else:
-        run_calc = False
+    calc_btn = st.button("SİMÜLASYONU BAŞLAT", type="primary")
 
-# --- ANA EKRAN ---
-
-if run_calc or True: # İlk açılışta çalışsın
-    # 1. Hata Kontrolü
-    warnings = engine.validate_inputs({'pH': pH, 'Cond': cond, 'TDS': tds})
-    for w in warnings:
-        st.warning(w)
-
-    # 2. Simülasyonu Çalıştır
+# --- HESAPLAMA ---
+if calc_btn or True:
+    # Simülasyon
     res = engine.run_simulation(
         water={'pH': pH, 'TDS': tds, 'CaH': ca, 'Alk': alk, 'SiO2': sio2},
         design={'T_out': t_out, 'acid_target_ph': target_ph},
-        constraints={'max_SiO2': 150, 'max_LSI': 2.8, 'max_CaH': 1200}
+        constraints={'max_SiO2': 160, 'max_LSI': 2.9, 'max_CaH': 1200}
     )
-
-    # 3. Su Dengesi Hesabı
-    evap, blow, makeup = engine.calculate_water_balance(q_circ, dt, res['Max_Cycle'])
-
-    # --- SONUÇ PANELİ ---
     
-    # Görsel Renk Belirleme (Cycle ve Riske göre)
-    color = "#3498db" # Mavi (Güvenli)
-    if res['Final_LSI'] > 2.0: color = "#f1c40f" # Sarı (Dikkat)
-    if res['Stop_Reason'] != "Maksimum Döngü Sınırı": color = "#e74c3c" # Kırmızı (Limit)
-
-    # Üst KPI Kartları
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Maksimum Cycle", f"{res['Max_Cycle']}x")
-    with col2:
-        st.metric("Tüketim (Besi Suyu)", f"{int(makeup)} m³/h")
-    with col3:
-        st.metric("Blöf Miktarı", f"{float(blow):.2f} m³/h")
-    with col4:
-        st.metric("Kritik LSI (Skin)", f"{res['Final_LSI']:.2f}")
-
-    # Detaylı Analiz
-    c1, c2 = st.columns([2, 1])
+    evap, blow, makeup = engine.calculate_balance(q_circ, dt, res['Max_Cycle'])
     
-    with c1:
-        st.subheader("🔍 Simülasyon Grafiği")
-        df_hist = pd.DataFrame(res['History'])
-        st.line_chart(df_hist, x="Cycle", y=["LSI", "SiO2"])
+    # --- SEKMELER (TABS) ---
+    tab1, tab2, tab3 = st.tabs(["📊 Simülasyon Özeti", "💰 Maliyet Analizi", "📈 Detay Grafikler"])
+
+    with tab1:
+        # KPI Kartları
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Maksimum Cycle", f"{res['Max_Cycle']}x")
+        c2.metric("Blöf (Atık Su)", f"{float(blow):.1f} m³/h")
+        c3.metric("Besi Suyu İhtiyacı", f"{int(makeup)} m³/h")
+        c4.metric("Kritik LSI", f"{res['Final_LSI']:.2f}")
         
-        st.info(f"**Durma Nedeni:** Sistem **{res['Stop_Reason']}** sebebiyle durduruldu.")
-
-    with c2:
-        st.subheader("🧪 Kimyasal Önerisi")
-        if res['Chemical']:
-            st.success(f"**Önerilen:** {res['Chemical']['name']}")
-            st.write(f"_{res['Chemical']['desc']}_")
-            st.write(f"**Neden:** {res['Chem_Reason']}")
-            st.write(f"**Dozaj:** {res['Chemical']['dose']} ppm")
-            
-            # Günlük Tüketim Hesabı
-            daily_cons = (makeup * res['Chemical']['dose'] * 24) / 1000
-            st.write(f"**Günlük:** {daily_cons:.1f} kg/gün")
+        st.info(f"🛑 **Sınırlayıcı Faktör:** Sistem **{res['Stop_Reason']}** nedeniyle daha fazla konsantre edilemiyor.")
+        
+        # Ürün Önerisi Kutusu
+        if res['Product']:
+            st.success(f"✅ **Önerilen Ürün:** {res['Product']['code']} - {res['Product']['name']}")
+            st.write(f"**Teknik Gerekçe:** {res['Tech_Note']}")
         else:
-            st.error("Uygun ürün bulunamadı. Şartlar çok ağır.")
+            st.error("❌ Kritik limitler aşıldı. Standart ürünler yetersiz.")
 
-    # --- GÖRSEL TEMSİL (SVG) ---
-    st.subheader("Visual Twin")
-    
-    # Basit bir SVG Kule Çizimi (Dinamik Renkli)
-    svg_code = f"""
-    <svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
-     <rect x="100" y="50" width="150" height="200" fill="#ddd" stroke="#555" stroke-width="3"/>
-     <rect x="105" y="150" width="140" height="95" fill="{color}" opacity="0.8">
-       <animate attributeName="height" from="90" to="95" dur="2s" repeatCount="indefinite" />
-     </rect>
-     <circle cx="175" cy="50" r="20" fill="#555" />
-     <line x1="50" y1="200" x2="100" y2="200" stroke="#2980b9" stroke-width="5" marker-end="url(#arrow)" />
-     <text x="10" y="195" font-family="Arial" font-size="12">Makeup: {int(makeup)}</text>
-     
-     <line x1="250" y1="230" x2="300" y2="230" stroke="#c0392b" stroke-width="5" />
-     <text x="260" y="220" font-family="Arial" font-size="12">Blow: {float(blow):.1f}</text>
-     
-     <text x="130" y="200" font-family="Arial" font-size="14" fill="white" font-weight="bold">CoC: {res['Max_Cycle']}</text>
-    </svg>
-    """
-    st.image(svg_code if False else f"data:image/svg+xml;utf8,{svg_code}", use_column_width=False)
+    with tab2:
+        st.subheader("Finansal Projeksiyon (Tahmini)")
+        
+        if res['Product']:
+            prod = res['Product']
+            # Tüketim Hesabı: Makeup (m3/h) * Dozaj (g/m3) / 1000 = kg/h
+            hourly_cons = (makeup * prod['dose_ppm']) / 1000
+            daily_cons = hourly_cons * 24
+            daily_cost = daily_cons * prod['price_usd']
+            monthly_cost = daily_cost * 30
+            
+            col_fin1, col_fin2 = st.columns(2)
+            
+            with col_fin1:
+                st.markdown(f"**Seçilen Ürün:** {prod['name']}")
+                st.markdown(f"**Birim Fiyat:** ${prod['price_usd']}/kg")
+                st.markdown(f"**Dozaj:** {prod['dose_ppm']} ppm (Makeup üzerinden)")
+                
+            with col_fin2:
+                st.metric("Günlük Tüketim", f"{daily_cons:.1f} kg")
+                st.metric("Günlük Maliyet", f"${daily_cost:.2f}")
+                st.metric("Aylık Tahmini Maliyet", f"${monthly_cost:,.0f}")
+                
+            st.warning("⚠️ Not: Bu hesaplamalar teorik tüketimdir. Blöf kontrolü ve sistem verimine göre +/- %15 değişebilir.")
+        else:
+            st.write("Ürün seçilemediği için maliyet hesaplanamadı.")
+
+    with tab3:
+        st.subheader("Konsantrasyon Grafiği")
+        df_hist = pd.DataFrame(res['History'])
+        st.line_chart(df_hist, x="Cycle", y=["LSI", "SiO2", "pH"])
+        
+        st.write("Veri Tablosu:")
+        st.dataframe(df_hist)
